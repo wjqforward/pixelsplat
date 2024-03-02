@@ -1,3 +1,6 @@
+import sys
+sys.path.append('/root/autodl-tmp/pixelsplat')
+
 from pathlib import Path
 
 import hydra
@@ -36,11 +39,12 @@ SCENES = (
     # scene, context 1, context 2, far plane
     # ("fc60dbb610046c56", 28, 115, 10.0),d7c9abc0b221c799
     # ("1eca36ec55b88fe4", 0, 120, 3.0, [110]), # teaser fig.
-    ("2c52d9d606a3ece2", 87, 112, 35.0, [105]),
-    ("71a1121f817eb913", 139, 164, 10.0, [65]),
-    ("d70fc3bef87bffc1", 67, 92, 10.0, [60]),
-    ("f0feab036acd7195", 44, 69, 25.0, [125]),
-    ("a93d9d0fd69071aa", 57, 82, 15.0, [60]),
+    # ("2c52d9d606a3ece2", 87, 112, 35.0, [105]),
+    # ("71a1121f817eb913", 139, 164, 10.0, [65]),
+    # ("d70fc3bef87bffc1", 67, 92, 10.0, [60]),
+    # ("f0feab036acd7195", 44, 69, 25.0, [125]),
+    # ("a93d9d0fd69071aa", 57, 82, 15.0, [60]),
+    ("5aca87f95a9412c6", 2, 142, 15.0, [60]),
 )
 FIGURE_WIDTH = 500
 MARGIN = 4

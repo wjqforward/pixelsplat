@@ -175,3 +175,6 @@ cython_debug/
 table.tex
 /baselines
 /test/*
+
+/point_clouds
+/point_clouds/*

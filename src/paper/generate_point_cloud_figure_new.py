@@ -34,18 +34,18 @@ with install_import_hook(
     from src.visualization.drawing.lines import draw_lines
     from src.visualization.drawing.points import draw_points
 
+import numpy as np
+from PIL import Image
+import json
+import torchvision.transforms as transforms
+from jaxtyping import Float, Int64
+import time
 
 SCENES = (
     # scene, context 1, context 2, far plane
-    # ("fc60dbb610046c56", 28, 115, 10.0),d7c9abc0b221c799
-    # ("1eca36ec55b88fe4", 0, 120, 3.0, [110]), # teaser fig.
-    # ("2c52d9d606a3ece2", 87, 112, 35.0, [105]),
-    # ("71a1121f817eb913", 139, 164, 10.0, [65]),
-    # ("d70fc3bef87bffc1", 67, 92, 10.0, [60]),
-    # ("f0feab036acd7195", 44, 69, 25.0, [125]),
-    # ("a93d9d0fd69071aa", 57, 82, 15.0, [60]),
-    ("5aca87f95a9412c6", 2, 142, 15.0, [60]),
+    ("test", [785, 795], 15, [0]),
 )
+
 FIGURE_WIDTH = 500
 MARGIN = 4
 GAUSSIAN_TRIM = 8
@@ -53,12 +53,105 @@ LINE_WIDTH = 2
 LINE_COLOR = [0, 0, 0]
 POINT_DENSITY = 0.5
 
+scene_path = "/root/autodl-tmp/SplaTAM/data/Replica/room0/results/"
+extrinsics_path = "/root/autodl-tmp/SplaTAM/data/Replica/room0/traj.txt"
+intrinsics_path = "/root/autodl-tmp/SplaTAM/data/Replica/cam_params.json"
+
+def read_intrinsics_from_json_tensor(json_file_path):
+    # Read the JSON file
+    with open(json_file_path, 'r') as file:
+        data = json.load(file)
+
+    # Extract camera parameters
+    camera_params = data['camera']
+    fx = camera_params['fx']
+    fy = camera_params['fy']
+    cx = camera_params['cx']
+    cy = camera_params['cy']
+    w = camera_params['w']
+    h = camera_params['h']
+
+    # # Construct the intrinsic matrix as a PyTorch tensor
+    # intrinsics = torch.tensor([
+    #     [fx, 0, cx],
+    #     [0, fy, cy],
+    #     [0,  0,  1]
+    # ], dtype=torch.float32)  # Ensure the tensor type matches your model's requirements
+    
+    normalized_cx = cx /fx
+    normalized_cy = cy /fy
+    normalized_fx = fx /fx
+    normalized_fy = fy /fy
+
+    # 归一化内参矩阵
+    intrinsics = torch.tensor([[normalized_fx, 0, normalized_cx],
+                            [0, normalized_fy, normalized_cy],
+                            [0, 0, 1]], dtype=torch.float32)
+
+    intrinsics = torch.stack([intrinsics, intrinsics])  # Repeat for the number of views
+    intrinsics = intrinsics.unsqueeze(0)
+    device = 'cuda:0'
+    intrinsics = intrinsics.to(device)
+    return intrinsics
+
+def read_extrinsics(file_path, indices):
+    extrinsics = []
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+    for index in indices:
+        matrix_line = lines[index].strip().split()  
+        matrix_line = [float(i) for i in matrix_line]
+        matrix = torch.tensor(matrix_line, dtype=torch.float32).view(4, 4)
+        extrinsics.append(matrix)
+    
+    extrinsics = torch.stack(extrinsics, dim=0)
+    extrinsics_4d = extrinsics.unsqueeze(0)
+
+    device = 'cuda:0'
+    extrinsics_cuda = extrinsics_4d.to(device)
+    return extrinsics_cuda
+
+
+
+def load_images(indices):
+    device = 'cuda:0'
+    # 定义预处理操作，包括等比例缩放和中心裁剪
+    preprocess = transforms.Compose([
+        transforms.Resize(256),  # 等比例缩放高度到256，宽度自动调整保持宽高比
+        transforms.CenterCrop(256),  # 中心裁剪出256x256的区域
+        transforms.ToTensor(),  # 将图片转为Tensor并归一化到[0, 1]
+    ])
+
+    images = []
+    image_paths = [f"{scene_path}frame{index:06}.jpg" for index in indices]  # 根据索引构造图像路径
+
+    # 对每个图像路径进行处理
+    for path in image_paths:
+        image = Image.open(path)  # 打开图像
+        image_tensor = preprocess(image).unsqueeze(0)  # 预处理并添加一个额外的维度
+        images.append(image_tensor)
+
+    # 将所有图像Tensor堆叠成一个Tensor
+    batch_tensor = torch.cat(images, dim=0)
+    batch_tensor_5d = batch_tensor.unsqueeze(0)  # 在最外层添加一个额外维度
+    
+    # 移动Tensor到指定的设备
+    batch_tensor_5d = batch_tensor_5d.to(device)
+    
+    return batch_tensor_5d
+
+
+
+
+
+
 
 @hydra.main(
     version_base=None,
     config_path="../../config",
     config_name="main",
 )
+
 def generate_point_cloud_figure(cfg_dict):
     cfg = load_typed_root_config(cfg_dict)
     set_cfg(cfg_dict)
@@ -83,31 +176,57 @@ def generate_point_cloud_figure(cfg_dict):
     )
     model_wrapper.eval()
 
-    for idx, (scene, *context_indices, far, angles) in enumerate(SCENES):
-        # Create a dataset that always returns the desired scene.
-        view_sampler_cfg = ViewSamplerArbitraryCfg(
-            "arbitrary",
-            2,
-            2,
-            context_views=list(context_indices),
-            target_views=[0, 0],  # use [40, 80] for teaser
-        )
-        cfg.dataset.view_sampler = view_sampler_cfg
-        cfg.dataset.overfit_to_scene = scene
+    
+    for idx, (scene, context_indices, far, angles) in enumerate(SCENES):
+        # example = {
+        #             "context": {
+        #                 "extrinsics": extrinsics[context_indices],
+        #                 "intrinsics": intrinsics[context_indices],
+        #                 "image": context_images,
+        #                 "near": self.get_bound("near", len(context_indices)) / scale,
+        #                 "far": self.get_bound("far", len(context_indices)) / scale,
+        #                 "index": context_indices,
+        #             },
+        #             "target": {
+        #                 "extrinsics": extrinsics[target_indices],
+        #                 "intrinsics": intrinsics[target_indices],
+        #                 "image": target_images,
+        #                 "near": self.get_bound("near", len(target_indices)) / scale,
+        #                 "far": self.get_bound("far", len(target_indices)) / scale,
+        #                 "index": target_indices,
+        #             },
+        #             "scene": scene,
+        #         }
+        start_time = time.time()
+        example = {"context": {}}
+        device = 'cuda:0'
+        intrinsics = read_intrinsics_from_json_tensor(intrinsics_path)  # Example intrinsics for simplicity
+        
 
-        # Get the scene.
-        dataset = get_dataset(cfg.dataset, "test", None)
+        example["context"]["extrinsics"] = read_extrinsics(extrinsics_path, context_indices)
+        example["context"]["intrinsics"] = intrinsics
+        example["context"]["image"] = load_images(context_indices)
+        # Assuming near and far values are predefined or calculated elsewhere
+        example["context"]["near"] = torch.tensor([[0.0598, 0.0598]]).to(device)  # Example values
+        example["context"]["far"] = torch.tensor([[597.6885, 597.6885]]).to(device)  # Example values
+        example["context"]["index"] = torch.tensor([context_indices]).to(device)
 
-        example = default_collate([next(iter(dataset))])
-        example = apply_to_collection(example, Tensor, lambda x: x.to(device))
         print(example["context"])
         print("___________")
         print(example["context"]["image"].shape)
+
+
+
+
+
+
+
         # Generate the Gaussians.
         visualization_dump = {}
         gaussians = encoder.forward(
             example["context"], False, visualization_dump=visualization_dump
         )
+
 
         # Figure out which Gaussians to mask off/throw away.
         _, _, _, h, w = example["context"]["image"].shape
@@ -127,12 +246,16 @@ def generate_point_cloud_figure(cfg_dict):
 
         # Then, drop Gaussians that are really far away.
         mask = mask & (means[..., 2] < far)
+        end_time = time.time()
+        print("time", end_time-start_time)
 
         def trim(element):
             element = rearrange(
                 element, "() (v h w spp) ... -> h w spp v ...", v=2, h=h, w=w
             )
             return element[mask][None]
+
+        
 
         for angle in angles:
             # Define the pose we render from.

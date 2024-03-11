@@ -42,8 +42,11 @@ from jaxtyping import Float, Int64
 import time
 
 SCENES = (
-    # scene, context 1, context 2, far plane
-    ("test", [785, 795], 15, [0]),
+    # scene, [context 1, context 2], far plane
+    # ("test", [785, 795], 15, [0]),
+    ("1825_1865", [1825, 1865], 15, [0, 30, 60, 90, 120, 150]),
+    ("124_128", [124, 128], 15, [0, 30, 60, 90, 120, 150]),
+    ("512_522", [512, 522], 15, [0, 30, 60, 90, 120, 150]),
 )
 
 FIGURE_WIDTH = 500
@@ -58,11 +61,10 @@ extrinsics_path = "/root/autodl-tmp/SplaTAM/data/Replica/room0/traj.txt"
 intrinsics_path = "/root/autodl-tmp/SplaTAM/data/Replica/cam_params.json"
 
 def read_intrinsics_from_json_tensor(json_file_path):
-    # Read the JSON file
     with open(json_file_path, 'r') as file:
         data = json.load(file)
 
-    # Extract camera parameters
+    
     camera_params = data['camera']
     fx = camera_params['fx']
     fy = camera_params['fy']
@@ -71,25 +73,17 @@ def read_intrinsics_from_json_tensor(json_file_path):
     w = camera_params['w']
     h = camera_params['h']
 
-    # # Construct the intrinsic matrix as a PyTorch tensor
-    # intrinsics = torch.tensor([
-    #     [fx, 0, cx],
-    #     [0, fy, cy],
-    #     [0,  0,  1]
-    # ], dtype=torch.float32)  # Ensure the tensor type matches your model's requirements
     
     normalized_cx = cx /fx
     normalized_cy = cy /fy
     normalized_fx = fx /fx
     normalized_fy = fy /fy
 
-    # 归一化内参矩阵
     intrinsics = torch.tensor([[normalized_fx, 0, normalized_cx],
                             [0, normalized_fy, normalized_cy],
                             [0, 0, 1]], dtype=torch.float32)
 
-    intrinsics = torch.stack([intrinsics, intrinsics])  # Repeat for the number of views
-    intrinsics = intrinsics.unsqueeze(0)
+    intrinsics = torch.stack([intrinsics, intrinsics])  
     device = 'cuda:0'
     intrinsics = intrinsics.to(device)
     return intrinsics
@@ -115,27 +109,24 @@ def read_extrinsics(file_path, indices):
 
 def load_images(indices):
     device = 'cuda:0'
-    # 定义预处理操作，包括等比例缩放和中心裁剪
+    
     preprocess = transforms.Compose([
-        transforms.Resize(256),  # 等比例缩放高度到256，宽度自动调整保持宽高比
-        transforms.CenterCrop(256),  # 中心裁剪出256x256的区域
-        transforms.ToTensor(),  # 将图片转为Tensor并归一化到[0, 1]
+        transforms.Resize(256),
+        transforms.CenterCrop(256),
+        transforms.ToTensor(),
     ])
 
     images = []
-    image_paths = [f"{scene_path}frame{index:06}.jpg" for index in indices]  # 根据索引构造图像路径
+    image_paths = [f"{scene_path}frame{index:06}.jpg" for index in indices]
 
-    # 对每个图像路径进行处理
     for path in image_paths:
-        image = Image.open(path)  # 打开图像
-        image_tensor = preprocess(image).unsqueeze(0)  # 预处理并添加一个额外的维度
+        image = Image.open(path)  
+        image_tensor = preprocess(image).unsqueeze(0)  
         images.append(image_tensor)
 
-    # 将所有图像Tensor堆叠成一个Tensor
     batch_tensor = torch.cat(images, dim=0)
-    batch_tensor_5d = batch_tensor.unsqueeze(0)  # 在最外层添加一个额外维度
+    batch_tensor_5d = batch_tensor.unsqueeze(0)
     
-    # 移动Tensor到指定的设备
     batch_tensor_5d = batch_tensor_5d.to(device)
     
     return batch_tensor_5d
@@ -204,7 +195,7 @@ def generate_point_cloud_figure(cfg_dict):
         
 
         example["context"]["extrinsics"] = read_extrinsics(extrinsics_path, context_indices)
-        example["context"]["intrinsics"] = intrinsics
+        example["context"]["intrinsics"] = intrinsics.unsqueeze(0)
         example["context"]["image"] = load_images(context_indices)
         # Assuming near and far values are predefined or calculated elsewhere
         example["context"]["near"] = torch.tensor([[0.0598, 0.0598]]).to(device)  # Example values
@@ -249,196 +240,194 @@ def generate_point_cloud_figure(cfg_dict):
         end_time = time.time()
         print("time", end_time-start_time)
 
-        def trim(element):
-            element = rearrange(
-                element, "() (v h w spp) ... -> h w spp v ...", v=2, h=h, w=w
-            )
-            return element[mask][None]
+        # def trim(element):
+        #     element = rearrange(
+        #         element, "() (v h w spp) ... -> h w spp v ...", v=2, h=h, w=w
+        #     )
+        #     return element[mask][None]
 
-        
+        # for angle in angles:
+        #     # Define the pose we render from.
+        #     pose = torch.eye(4, dtype=torch.float32, device=device)
+        #     rotation = R.from_euler("xyz", [-15, angle - 90, 0], True).as_matrix()
+        #     pose[:3, :3] = torch.tensor(rotation, dtype=torch.float32, device=device)
+        #     translation = torch.eye(4, dtype=torch.float32, device=device)
+        #     # visual balance, 0.5x pyramid/frustum volume
+        #     translation[2, 3] = far * (0.5 ** (1 / 3))
+        #     pose = translation @ pose
 
-        for angle in angles:
-            # Define the pose we render from.
-            pose = torch.eye(4, dtype=torch.float32, device=device)
-            rotation = R.from_euler("xyz", [-15, angle - 90, 0], True).as_matrix()
-            pose[:3, :3] = torch.tensor(rotation, dtype=torch.float32, device=device)
-            translation = torch.eye(4, dtype=torch.float32, device=device)
-            # visual balance, 0.5x pyramid/frustum volume
-            translation[2, 3] = far * (0.5 ** (1 / 3))
-            pose = translation @ pose
+        #     ones = torch.ones((1,), dtype=torch.float32, device=device)
+        #     render_args = {
+        #         "extrinsics": example["context"]["extrinsics"][0, :1] @ pose,
+        #         "width": ones * far * 2,
+        #         "height": ones * far * 2,
+        #         "near": ones * 0,
+        #         "far": ones * far,
+        #         "image_shape": (1024, 1024),
+        #         "background_color": torch.zeros(
+        #             (1, 3), dtype=torch.float32, device=device
+        #         ),
+        #         "gaussian_means": trim(gaussians.means),
+        #         "gaussian_covariances": trim(gaussians.covariances),
+        #         "gaussian_sh_coefficients": trim(gaussians.harmonics),
+        #         "gaussian_opacities": trim(gaussians.opacities),
+        #     }
 
-            ones = torch.ones((1,), dtype=torch.float32, device=device)
-            render_args = {
-                "extrinsics": example["context"]["extrinsics"][0, :1] @ pose,
-                "width": ones * far * 2,
-                "height": ones * far * 2,
-                "near": ones * 0,
-                "far": ones * far,
-                "image_shape": (1024, 1024),
-                "background_color": torch.zeros(
-                    (1, 3), dtype=torch.float32, device=device
-                ),
-                "gaussian_means": trim(gaussians.means),
-                "gaussian_covariances": trim(gaussians.covariances),
-                "gaussian_sh_coefficients": trim(gaussians.harmonics),
-                "gaussian_opacities": trim(gaussians.opacities),
-            }
+        #     # Render alpha (opacity).
+        #     dump = {}
+        #     alpha_args = {
+        #         **render_args,
+        #         "gaussian_sh_coefficients": torch.ones_like(
+        #             render_args["gaussian_sh_coefficients"][..., :1]
+        #         ),
+        #         "use_sh": False,
+        #     }
+        #     alpha = render_cuda_orthographic(**alpha_args, dump=dump)[0]
 
-            # Render alpha (opacity).
-            dump = {}
-            alpha_args = {
-                **render_args,
-                "gaussian_sh_coefficients": torch.ones_like(
-                    render_args["gaussian_sh_coefficients"][..., :1]
-                ),
-                "use_sh": False,
-            }
-            alpha = render_cuda_orthographic(**alpha_args, dump=dump)[0]
+        #     # Render (premultiplied) color.
+        #     color = render_cuda_orthographic(**render_args)[0]
 
-            # Render (premultiplied) color.
-            color = render_cuda_orthographic(**render_args)[0]
+        #     # Render depths. Without modifying the renderer, we can only render
+        #     # premultiplied depth, then hackily transform it into straight alpha depth,
+        #     # which is needed for sorting.
+        #     depth = render_args["gaussian_means"] - dump["extrinsics"][0, :3, 3]
+        #     depth = depth.norm(dim=-1)
+        #     depth_args = {
+        #         **render_args,
+        #         "gaussian_sh_coefficients": repeat(depth, "() g -> () g c ()", c=3),
+        #         "use_sh": False,
+        #     }
+        #     depth_premultiplied = render_cuda_orthographic(**depth_args)
+        #     depth = (depth_premultiplied / alpha).nan_to_num(posinf=1e10, nan=1e10)[0]
 
-            # Render depths. Without modifying the renderer, we can only render
-            # premultiplied depth, then hackily transform it into straight alpha depth,
-            # which is needed for sorting.
-            depth = render_args["gaussian_means"] - dump["extrinsics"][0, :3, 3]
-            depth = depth.norm(dim=-1)
-            depth_args = {
-                **render_args,
-                "gaussian_sh_coefficients": repeat(depth, "() g -> () g c ()", c=3),
-                "use_sh": False,
-            }
-            depth_premultiplied = render_cuda_orthographic(**depth_args)
-            depth = (depth_premultiplied / alpha).nan_to_num(posinf=1e10, nan=1e10)[0]
+        #     # Save the rendering for later depth-based alpha compositing.
+        #     layers = [(color, alpha, depth)]
 
-            # Save the rendering for later depth-based alpha compositing.
-            layers = [(color, alpha, depth)]
+        #     # Figure out the intrinsics from the FOV.
+        #     fx = 0.5 / (0.5 * dump["fov_x"]).tan()
+        #     fy = 0.5 / (0.5 * dump["fov_y"]).tan()
+        #     dump_intrinsics = torch.eye(3, dtype=torch.float32, device=device)
+        #     dump_intrinsics[0, 0] = fx
+        #     dump_intrinsics[1, 1] = fy
+        #     dump_intrinsics[:2, 2] = 0.5
 
-            # Figure out the intrinsics from the FOV.
-            fx = 0.5 / (0.5 * dump["fov_x"]).tan()
-            fy = 0.5 / (0.5 * dump["fov_y"]).tan()
-            dump_intrinsics = torch.eye(3, dtype=torch.float32, device=device)
-            dump_intrinsics[0, 0] = fx
-            dump_intrinsics[1, 1] = fy
-            dump_intrinsics[:2, 2] = 0.5
+        #     # Compute frustum corners for the context views.
+        #     frustum_corners = unproject_frustum_corners(
+        #         example["context"]["extrinsics"][0],
+        #         example["context"]["intrinsics"][0],
+        #         torch.ones((2,), dtype=torch.float32, device=device) * far / 8,
+        #     )
+        #     camera_origins = example["context"]["extrinsics"][0, :, :3, 3]
 
-            # Compute frustum corners for the context views.
-            frustum_corners = unproject_frustum_corners(
-                example["context"]["extrinsics"][0],
-                example["context"]["intrinsics"][0],
-                torch.ones((2,), dtype=torch.float32, device=device) * far / 8,
-            )
-            camera_origins = example["context"]["extrinsics"][0, :, :3, 3]
+        #     # Generate the 3D lines that have to be computed.
+        #     lines = []
+        #     for corners, origin in zip(frustum_corners, camera_origins):
+        #         for i in range(4):
+        #             lines.append((corners[i], corners[i - 1]))
+        #             lines.append((corners[i], origin))
 
-            # Generate the 3D lines that have to be computed.
-            lines = []
-            for corners, origin in zip(frustum_corners, camera_origins):
-                for i in range(4):
-                    lines.append((corners[i], corners[i - 1]))
-                    lines.append((corners[i], origin))
+        #     # Generate an alpha compositing layer for each line.
+        #     for a, b in lines:
+        #         # Start with the point whose depth is further from the camera.
+        #         a_depth = (dump["extrinsics"].inverse() @ homogenize_points(a))[..., 2]
+        #         b_depth = (dump["extrinsics"].inverse() @ homogenize_points(b))[..., 2]
+        #         start = a if (a_depth > b_depth).all() else b
+        #         end = b if (a_depth > b_depth).all() else a
 
-            # Generate an alpha compositing layer for each line.
-            for a, b in lines:
-                # Start with the point whose depth is further from the camera.
-                a_depth = (dump["extrinsics"].inverse() @ homogenize_points(a))[..., 2]
-                b_depth = (dump["extrinsics"].inverse() @ homogenize_points(b))[..., 2]
-                start = a if (a_depth > b_depth).all() else b
-                end = b if (a_depth > b_depth).all() else a
+        #         # Create the alpha mask (this one is clean).
+        #         start_2d = project(start, dump["extrinsics"], dump_intrinsics)[0][0]
+        #         end_2d = project(end, dump["extrinsics"], dump_intrinsics)[0][0]
+        #         alpha = draw_lines(
+        #             torch.zeros_like(color),
+        #             start_2d[None],
+        #             end_2d[None],
+        #             (1, 1, 1),
+        #             LINE_WIDTH,
+        #             x_range=(0, 1),
+        #             y_range=(0, 1),
+        #         )
 
-                # Create the alpha mask (this one is clean).
-                start_2d = project(start, dump["extrinsics"], dump_intrinsics)[0][0]
-                end_2d = project(end, dump["extrinsics"], dump_intrinsics)[0][0]
-                alpha = draw_lines(
-                    torch.zeros_like(color),
-                    start_2d[None],
-                    end_2d[None],
-                    (1, 1, 1),
-                    LINE_WIDTH,
-                    x_range=(0, 1),
-                    y_range=(0, 1),
-                )
+        #         # Create the color.
+        #         lc = torch.tensor(LINE_COLOR, dtype=torch.float32, device=device)
+        #         color = draw_lines(
+        #             torch.zeros_like(color),
+        #             start_2d[None],
+        #             end_2d[None],
+        #             lc,
+        #             LINE_WIDTH,
+        #             x_range=(0, 1),
+        #             y_range=(0, 1),
+        #         )
 
-                # Create the color.
-                lc = torch.tensor(LINE_COLOR, dtype=torch.float32, device=device)
-                color = draw_lines(
-                    torch.zeros_like(color),
-                    start_2d[None],
-                    end_2d[None],
-                    lc,
-                    LINE_WIDTH,
-                    x_range=(0, 1),
-                    y_range=(0, 1),
-                )
+        #         # Create the depth. We just individually render points.
+        #         wh = torch.tensor((w, h), dtype=torch.float32, device=device)
+        #         delta = (wh * (start_2d - end_2d)).norm()
+        #         num_points = delta / POINT_DENSITY
+        #         t = torch.linspace(0, 1, int(num_points) + 1, device=device)
+        #         xyz = start[None] * t[:, None] + end[None] * (1 - t)[:, None]
+        #         depth = (xyz - dump["extrinsics"][0, :3, 3]).norm(dim=-1)
+        #         depth = repeat(depth, "p -> p c", c=3)
+        #         xy = project(xyz, dump["extrinsics"], dump_intrinsics)[0]
+        #         depth = draw_points(
+        #             torch.ones_like(color) * 1e10,
+        #             xy,
+        #             depth,
+        #             LINE_WIDTH,  # makes it 2x as wide as line
+        #             x_range=(0, 1),
+        #             y_range=(0, 1),
+        #         )
 
-                # Create the depth. We just individually render points.
-                wh = torch.tensor((w, h), dtype=torch.float32, device=device)
-                delta = (wh * (start_2d - end_2d)).norm()
-                num_points = delta / POINT_DENSITY
-                t = torch.linspace(0, 1, int(num_points) + 1, device=device)
-                xyz = start[None] * t[:, None] + end[None] * (1 - t)[:, None]
-                depth = (xyz - dump["extrinsics"][0, :3, 3]).norm(dim=-1)
-                depth = repeat(depth, "p -> p c", c=3)
-                xy = project(xyz, dump["extrinsics"], dump_intrinsics)[0]
-                depth = draw_points(
-                    torch.ones_like(color) * 1e10,
-                    xy,
-                    depth,
-                    LINE_WIDTH,  # makes it 2x as wide as line
-                    x_range=(0, 1),
-                    y_range=(0, 1),
-                )
+        #         layers.append((color, alpha, depth))
 
-                layers.append((color, alpha, depth))
+        #     # Do the alpha compositing.
+        #     canvas = torch.ones_like(color)
+        #     colors = torch.stack([x for x, _, _ in layers])
+        #     alphas = torch.stack([x for _, x, _ in layers])
+        #     depths = torch.stack([x for _, _, x in layers])
+        #     index = depths.argsort(dim=0)
+        #     colors = colors.gather(index=index, dim=0)
+        #     alphas = alphas.gather(index=index, dim=0)
+        #     t = (1 - alphas).cumprod(dim=0)
+        #     t = torch.cat([torch.ones_like(t[:1]), t[:-1]], dim=0)
+        #     image = (t * colors).sum(dim=0)
+        #     total_alpha = (t * alphas).sum(dim=0)
+        #     image = total_alpha * image + (1 - total_alpha) * canvas
 
-            # Do the alpha compositing.
-            canvas = torch.ones_like(color)
-            colors = torch.stack([x for x, _, _ in layers])
-            alphas = torch.stack([x for _, x, _ in layers])
-            depths = torch.stack([x for _, _, x in layers])
-            index = depths.argsort(dim=0)
-            colors = colors.gather(index=index, dim=0)
-            alphas = alphas.gather(index=index, dim=0)
-            t = (1 - alphas).cumprod(dim=0)
-            t = torch.cat([torch.ones_like(t[:1]), t[:-1]], dim=0)
-            image = (t * colors).sum(dim=0)
-            total_alpha = (t * alphas).sum(dim=0)
-            image = total_alpha * image + (1 - total_alpha) * canvas
+        #     base = Path(f"point_clouds/{idx:0>6}_{scene}")
+        #     save_image(image, f"{base}_angle_{angle:0>3}.png")
 
-            base = Path(f"point_clouds/{idx:0>6}_{scene}")
-            save_image(image, f"{base}_angle_{angle:0>3}.png")
+        #     # Render depth.
+        #     *_, h, w = example["context"]["image"].shape
+        #     rendered = decoder.forward(
+        #         gaussians,
+        #         example["context"]["extrinsics"],
+        #         example["context"]["intrinsics"],
+        #         example["context"]["near"],
+        #         example["context"]["far"],
+        #         (h, w),
+        #         "depth",
+        #     )
 
-            # Render depth.
-            *_, h, w = example["context"]["image"].shape
-            rendered = decoder.forward(
-                gaussians,
-                example["context"]["extrinsics"],
-                example["context"]["intrinsics"],
-                example["context"]["near"],
-                example["context"]["far"],
-                (h, w),
-                "depth",
-            )
+        #     export_ply(
+        #         example["context"]["extrinsics"][0, 0],
+        #         trim(gaussians.means)[0],
+        #         trim(visualization_dump["scales"])[0],
+        #         trim(visualization_dump["rotations"])[0],
+        #         trim(gaussians.harmonics)[0],
+        #         trim(gaussians.opacities)[0],
+        #         base / "gaussians.ply",
+        #     )
 
-            export_ply(
-                example["context"]["extrinsics"][0, 0],
-                trim(gaussians.means)[0],
-                trim(visualization_dump["scales"])[0],
-                trim(visualization_dump["rotations"])[0],
-                trim(gaussians.harmonics)[0],
-                trim(gaussians.opacities)[0],
-                base / "gaussians.ply",
-            )
-
-            result = rendered.depth
-            depth_near = result[result > 0].quantile(0.01).log()
-            depth_far = result.quantile(0.99).log()
-            result = result.log()
-            result = 1 - (result - depth_near) / (depth_far - depth_near)
-            result = apply_color_map_to_image(result, "turbo")
-            save_image(result[0, 0], f"{base}_depth_0.png")
-            save_image(result[0, 1], f"{base}_depth_1.png")
-            a = 1
-        a = 1
+        #     result = rendered.depth
+        #     depth_near = result[result > 0].quantile(0.01).log()
+        #     depth_far = result.quantile(0.99).log()
+        #     result = result.log()
+        #     result = 1 - (result - depth_near) / (depth_far - depth_near)
+        #     result = apply_color_map_to_image(result, "turbo")
+        #     save_image(result[0, 0], f"{base}_depth_0.png")
+        #     save_image(result[0, 1], f"{base}_depth_1.png")
+        #     a = 1
+        # a = 1
     a = 1
 
 

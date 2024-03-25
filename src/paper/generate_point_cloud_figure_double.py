@@ -48,7 +48,8 @@ SCENES = (
     # ("test", [785, 795], 15, [0]),
     # ("1825_1865", [1825, 1865], 15, [0, 30, 60, 90, 120, 150]),
     # ("124_128", [124, 128], 15, [0, 30, 60, 90, 120, 150]),
-    ("512_522", [0, 20], 15, [0]),
+    ("512_522", [0, 9], 10, [0]),
+    ("512_522", [10, 19], 10, [0]),
 )
 
 FIGURE_WIDTH = 500
@@ -180,7 +181,9 @@ def generate_point_cloud_figure(cfg_dict):
     )
     model_wrapper.eval()
 
-    
+    gs1 = None
+
+    count = 0
     for idx, (scene, context_indices, far, angles) in enumerate(SCENES):
         # example = {
         #             "context": {
@@ -228,6 +231,12 @@ def generate_point_cloud_figure(cfg_dict):
         )
         time1 = time.time()
         print(time1-start_time)
+
+        op_mask = gaussians.opacities < 0.15
+        gaussians.means = gaussians.means[~op_mask].unsqueeze(0)
+        gaussians.covariances = gaussians.covariances[~op_mask].unsqueeze(0)
+        gaussians.harmonics = gaussians.harmonics[~op_mask].unsqueeze(0)
+        gaussians.opacities = gaussians.opacities[~op_mask].unsqueeze(0)
         # print(gaussians.covariances.shape)
         # print(gaussians.covariances)
         # print(gaussians.harmonics.shape)
@@ -261,36 +270,51 @@ def generate_point_cloud_figure(cfg_dict):
         time2 = time.time()
         print(time2-start_time)
 
-        # Render depth.
-        *_, h, w = example["context"]["image"].shape
-        rendered = decoder.forward(
-            gaussians,
-            example["context"]["extrinsics"],
-            example["context"]["intrinsics"],
-            example["context"]["near"],
-            example["context"]["far"],
-            (h, w),
-            "depth",
-        )
+        if count == 0:
+            gs1 = gaussians
+        
+        count += 1
 
-        time3 = time.time()
-        print(time3-time2)
-        target_gt = example["context"]["image"]
 
-        # Compute metrics.
-        psnr_probabilistic = compute_psnr(
-            rearrange(target_gt, "b v c h w -> (b v) c h w"),
-            rearrange(rendered.color, "b v c h w -> (b v) c h w"),
-        )
-        print("train/psnr_probabilistic", psnr_probabilistic.mean())
+    gaussians.means = torch.cat((gaussians.means, gs1.means), dim=1)
+    gaussians.covariances = torch.cat((gaussians.covariances, gs1.covariances), dim=1)
+    gaussians.harmonics = torch.cat((gaussians.harmonics, gs1.harmonics), dim=1)
+    gaussians.opacities = torch.cat((gaussians.opacities, gs1.opacities), dim=1)
+    print(gaussians.covariances.shape)
+    # print(gaussians.covariances)
+    # print(gaussians.harmonics.shape)
+    # print(gaussians.harmonics)
+    # print("TESTTESTTEST")
+    # Render depth.
+    *_, h, w = example["context"]["image"].shape
+    rendered = decoder.forward(
+        gaussians,
+        example["context"]["extrinsics"],
+        example["context"]["intrinsics"],
+        example["context"]["near"],
+        example["context"]["far"],
+        (h, w),
+        "depth",
+    )
 
-        print(rendered.color.shape)
+    time3 = time.time()
+    print(time3-time2)
+    target_gt = example["context"]["image"]
 
-        for i in range(rendered.color.size(1)):
-            save_image(rendered.color[0, i], f'image_{i}.png')
+    # Compute metrics.
+    psnr_probabilistic = compute_psnr(
+        rearrange(target_gt, "b v c h w -> (b v) c h w"),
+        rearrange(rendered.color, "b v c h w -> (b v) c h w"),
+    )
+    print("train/psnr_probabilistic", psnr_probabilistic.mean())
 
-        for i in range(target_gt.size(1)):
-            save_image(target_gt[0, i], f'gt_{i}.png')
+    print(rendered.color.shape)
+
+    for i in range(rendered.color.size(1)):
+        save_image(rendered.color[0, i], f'image_{i}.png')
+
+    for i in range(target_gt.size(1)):
+        save_image(target_gt[0, i], f'gt_{i}.png')
 
 
 

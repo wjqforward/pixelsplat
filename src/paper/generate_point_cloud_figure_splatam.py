@@ -11,7 +11,7 @@ from lightning_fabric.utilities.apply_func import apply_to_collection
 from scipy.spatial.transform import Rotation as R
 from torch import Tensor
 from torch.utils.data import default_collate
-
+from src.evaluation.metrics import compute_lpips, compute_psnr, compute_ssim
 
 
 # Configure beartype and jaxtyping.
@@ -65,10 +65,6 @@ intrinsics_path = "/root/autodl-tmp/SplaTAM/data/Replica/cam_params.json"
 class PointCloudGenerator():
     def __init__(self, cfg):
         self.cfg = load_typed_root_config(cfg)
-        # print("999999999")
-        # print(self.cfg)
-        # print("999999999")
-        # time.sleep(3)
         set_cfg(cfg)
         torch.manual_seed(cfg.seed)
         self.device = torch.device("cuda:0")
@@ -77,11 +73,10 @@ class PointCloudGenerator():
         self.decoder = get_decoder(self.cfg.model.decoder, self.cfg.dataset)
         self.model_wrapper = self.load_model()
         self.model_wrapper.eval()
-        self.intrinsics = self.read_intrinsics_from_json_tensor(intrinsics_path)  # Example intrinsics for simplicity
+        self.intrinsics = self.read_intrinsics_from_json_tensor(intrinsics_path)
         self.index = 0
         self.extrinsics = self.read_extrinsics(extrinsics_path)
-        self.far = 15
-        self.extrinsics = None
+        self.far = 10.0
 
     def load_model(self):
         model_wrapper = ModelWrapper.load_from_checkpoint(
@@ -101,40 +96,23 @@ class PointCloudGenerator():
         with open(json_file_path, 'r') as file:
             data = json.load(file)
 
-        
-        camera_params = data['camera']
-        fx = camera_params['fx']
-        fy = camera_params['fy']
-        cx = camera_params['cx']
-        cy = camera_params['cy']
-        w = camera_params['w']
-        h = camera_params['h']
+        fx = 600.0 / 1200
+        fy = 600.0 / 680
+        cx = 0.5
+        cy = 0.5
 
-        
-        normalized_cx = cx /fx
-        normalized_cy = cy /fy
-        normalized_fx = fx /fx
-        normalized_fy = fy /fy
-
-        intrinsics = torch.tensor([[normalized_fx, 0, normalized_cx],
-                                [0, normalized_fy, normalized_cy],
-                                [0, 0, 1]], dtype=torch.float32)
+        intrinsics = torch.tensor([[fx, 0, cx],
+                                    [0, fy, cy],
+                                    [0, 0, 1]], dtype=torch.float32)
 
         intrinsics = torch.stack([intrinsics, intrinsics])  
-        device = 'cuda:0'
-        intrinsics = intrinsics.to(device)
+        intrinsics = intrinsics.to(self.device)
         return intrinsics
 
     def read_extrinsics(self, file_path):
         extrinsics = []
         with open(file_path, 'r') as f:
             lines = f.readlines()
-
-        # for index in indices:
-        #     matrix_line = lines[index].strip().split()  
-        #     matrix_line = [float(i) for i in matrix_line]
-        #     matrix = torch.tensor(matrix_line, dtype=torch.float32).view(4, 4)
-        #     extrinsics.append(matrix)
         
         for line in lines:
             matrix_line = line.strip().split()  
@@ -142,11 +120,10 @@ class PointCloudGenerator():
             matrix = torch.tensor(matrix_line, dtype=torch.float32).view(4, 4)
             extrinsics.append(matrix)
         
-        # extrinsics = torch.stack(extrinsics, dim=0)
-        # extrinsics_4d = extrinsics.unsqueeze(0)
+        extrinsics = torch.stack(extrinsics, dim=0)
+        extrinsics = extrinsics.unsqueeze(0)
+        extrinsics = extrinsics.to(self.device)
 
-        # device = 'cuda:0'
-        # extrinsics_cuda = extrinsics_4d.to(device)
         return extrinsics
 
 
@@ -169,70 +146,121 @@ class PointCloudGenerator():
         
         return batch_tensor
 
-    def generate_gaussians(self, time_idx, last_w2c, curr_w2c):
+    def generate_gaussians(self, time_idx, last_w2c, curr_w2c, last_img, curr_img, intrinsics, render):
 
         start_time = time.time()
         example = {"context": {}}
-        device = 'cuda:0'
-        # self.index += 1 # use this function from the second frame
-        
-        # If use gt pose
-        # extrinsics = torch.stack(self.extrinsics[time_idx-1:time_idx+1], dim=0)
-        # extrinsics = extrinsics.unsqueeze(0).to(device)
-        
-        # TODO
-        extrinsics = torch.stack(last_w2c, curr_w2c, dim=0)
+
+        extrinsics = torch.stack([curr_w2c.inverse(), last_w2c.inverse()], dim=0).unsqueeze(0).to(self.device)
         example["context"]["extrinsics"] = extrinsics
+        example["context"]["image"] = torch.stack([curr_img, last_img], dim=0).unsqueeze(0).to(self.device)
+        example["context"]["near"] = torch.tensor([[0.05, 0.05]]).to(self.device)  # Example values
+        example["context"]["far"] = torch.tensor([[10.0, 10.0]]).to(self.device)  # Example values
+        example["context"]["index"] = torch.tensor([time_idx, time_idx-4]).to(self.device)
+        example["context"]["intrinsics"] = torch.tensor([[[
+          [0.5000, 0.0000, 0.5000],
+          [0.0000, 0.8824, 0.5000],
+          [0.0000, 0.0000, 1.0000]],
 
-        example["context"]["intrinsics"] = self.intrinsics.unsqueeze(0)
-        example["context"]["image"] = self.load_images(time_idx).to(device)
-        # Assuming near and far values are predefined or calculated elsewhere
-        example["context"]["near"] = torch.tensor([[0.0598, 0.0598]]).to(device)  # Example values
-        example["context"]["far"] = torch.tensor([[597.6885, 597.6885]]).to(device)  # Example values
-        example["context"]["index"] = torch.tensor([time_idx-1, time_idx]).to(device)
+         [[0.5000, 0.0000, 0.5000],
+          [0.0000, 0.8824, 0.5000],
+          [0.0000, 0.0000, 1.0000]]]], device='cuda:0')
+        # example["context"]["image"] = self.load_images(1).to(self.device)
+        # example["context"]["intrinsics"] = torch.stack([intrinsics, intrinsics], dim=0).unsqueeze(0).to(self.device)
+        # example["context"]["extrinsics"] = torch.tensor([[[
+        #   [-3.2057e-01,  4.4806e-01, -8.3455e-01,  3.4530e+00],
+        #   [ 9.4722e-01,  1.5164e-01, -2.8244e-01,  4.5461e-01],
+        #   [ 1.0790e-16, -8.8105e-01, -4.7302e-01,  5.9363e-01],
+        #   [ 0.0000e+00,  0.0000e+00,  0.0000e+00,  1.0000e+00]],
 
-        # print(example["context"])
-        # print("___________")
-        # print(example["context"]["image"].shape)
+        #  [[-3.1393e-01,  4.5307e-01, -8.3437e-01,  3.4572e+00],
+        #   [ 9.4945e-01,  1.4981e-01, -2.7588e-01,  4.6971e-01],
+        #   [ 1.0762e-16, -8.7880e-01, -4.7719e-01,  5.9427e-01],
+        #   [ 0.0000e+00,  0.0000e+00,  0.0000e+00,  1.0000e+00]]]], device='cuda:0')
 
-        # Generate the Gaussians.
         visualization_dump = {}
         gaussians = self.encoder.forward(
-            example["context"], False, visualization_dump=visualization_dump
+            example["context"], True, visualization_dump=visualization_dump
         )
 
-        # Figure out which Gaussians to mask off/throw away.
-        _, _, _, h, w = example["context"]["image"].shape
+        # # Figure out which Gaussians to mask off/throw away.
+        # _, _, _, h, w = example["context"]["image"].shape
 
-        # Transform means into camera space.
-        means = rearrange(
-            gaussians.means, "() (v h w spp) xyz -> h w spp v xyz", v=2, h=h, w=w
-        )
-        means = homogenize_points(means)
-        w2c = example["context"]["extrinsics"].inverse()[0]
-        means = einsum(w2c, means, "v i j, ... v j -> ... v i")[..., :3]
+        # # Transform means into camera space.
+        # means = rearrange(
+        #     gaussians.means, "() (v h w spp) xyz -> h w spp v xyz", v=2, h=h, w=w
+        # )
+        # means = homogenize_points(means)
+        # w2c = example["context"]["extrinsics"].inverse()[0]
 
-        # Create a mask to filter the Gaussians. First, throw away Gaussians at the
-        # borders, since they're generally of lower quality.
-        mask = torch.zeros_like(means[..., 0], dtype=torch.bool)
-        mask[GAUSSIAN_TRIM:-GAUSSIAN_TRIM, GAUSSIAN_TRIM:-GAUSSIAN_TRIM, :, :] = 1
+        # means = einsum(w2c, means, "v i j, ... v j -> ... v i")[..., :3]
 
-        # Then, drop Gaussians that are really far away.
-        mask = mask & (means[..., 2] < self.far)
+        # # Create a mask to filter the Gaussians. First, throw away Gaussians at the
+        # # borders, since they're generally of lower quality.
+        # mask = torch.zeros_like(means[..., 0], dtype=torch.bool)
+        # mask[GAUSSIAN_TRIM:-GAUSSIAN_TRIM, GAUSSIAN_TRIM:-GAUSSIAN_TRIM, :, :] = 1
 
-        def trim(element):
-            element = rearrange(
-                element, "() (v h w spp) ... -> h w spp v ...", v=2, h=h, w=w
-            )
-            return element[mask][None]
+        # # Then, drop Gaussians that are really far away.
+        # mask = mask & (means[..., 2] < self.far)
 
-        gaussians.means =  trim(gaussians.means)
-        gaussians.covariances = trim(gaussians.covariances)
-        gaussians.harmonics = trim(gaussians.harmonics)
-        gaussians.opacities = trim(gaussians.opacities)
-    
+
+        # def trim(element):
+        #     element = rearrange(
+        #         element, "() (v h w spp) ... -> h w spp v ...", v=2, h=h, w=w
+        #     )
+        #     return element[mask][None]
+
+        # gaussians.means =  trim(gaussians.means)
+        # gaussians.covariances = trim(gaussians.covariances)
+        # gaussians.harmonics = trim(gaussians.harmonics)
+        # gaussians.opacities = trim(gaussians.opacities)
+
+        op_mask = gaussians.opacities < 0.15
+        gaussians.means = gaussians.means[~op_mask].unsqueeze(0)
+        gaussians.covariances = gaussians.covariances[~op_mask].unsqueeze(0)
+        gaussians.harmonics = gaussians.harmonics[~op_mask].unsqueeze(0)
+        gaussians.opacities = gaussians.opacities[~op_mask].unsqueeze(0)
+
+        print(gaussians.means.shape)
+        # print(gaussians.covariances.shape)
+        # print(gaussians.harmonics.shape)
+        # print(gaussians.opacities.shape)
+        # print(gaussians.covariances)
+        # print(gaussians.harmonics)
         end_time = time.time()
         print("time", end_time-start_time)
+
+        if render:
+            *_, h, w = example["context"]["image"].shape
+            rendered = self.decoder.forward(
+                gaussians,
+                example["context"]["extrinsics"],
+                example["context"]["intrinsics"],
+                example["context"]["near"],
+                example["context"]["far"],
+                (h, w),
+                "depth",
+            )
+
+            # print(example["context"]["extrinsics"])
+            # time.sleep(10)
+
+            target_gt = example["context"]["image"]
+
+            # Compute metrics.
+            psnr_probabilistic = compute_psnr(
+                rearrange(target_gt, "b v c h w -> (b v) c h w"),
+                rearrange(rendered.color, "b v c h w -> (b v) c h w"),
+            )
+            print("train/psnr_probabilistic", psnr_probabilistic.mean())
+
+            for i in range(rendered.color.size(1)):
+                save_image(rendered.color[0, i], f'spimg_{time_idx}_{i}.png')
+
+            for i in range(target_gt.size(1)):
+                save_image(target_gt[0, i], f'spgt_{time_idx}_{i}.png')
+
+            return gaussians, psnr_probabilistic.mean()
 
         return gaussians
 

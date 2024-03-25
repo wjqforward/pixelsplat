@@ -11,6 +11,9 @@ from lightning_fabric.utilities.apply_func import apply_to_collection
 from scipy.spatial.transform import Rotation as R
 from torch import Tensor
 from torch.utils.data import default_collate
+from src.evaluation.metrics import compute_lpips, compute_psnr, compute_ssim
+
+
 
 # Configure beartype and jaxtyping.
 with install_import_hook(
@@ -48,7 +51,7 @@ SCENES = (
     # ("bc95e5c7e357f1b7", 30, 40, 15.0, [30, 60, 90, 120]),
     # ("34b0658a5c200cdf", 30, 40, 15.0, [30, 60, 90, 120]),
     # ("28e8300e004ab30b", 30, 40, 15.0, [30, 60, 90, 120]),
-    ("6558c5f10d45a929", 30, 40, 15.0, [30, 60, 90, 120]),
+    ("6558c5f10d45a929", 10, 30, 15.0, [60]),
     # ("89ea49cd9865aeff", 30, 40, 15.0, [30, 60, 90, 120]),
     # ("cd69cde6b6bab65c", 10, 20, 15.0, [0]),
 
@@ -109,10 +112,12 @@ def generate_point_cloud_figure(cfg_dict):
 
         example = default_collate([next(iter(dataset))])
         example = apply_to_collection(example, Tensor, lambda x: x.to(device))
-        print(example["context"])
-        print("___________")
-        print(example["context"]["image"].shape)
+        # print(example["context"])
+        # print("___________")
+        # print(example["context"]["image"].shape)
         # Generate the Gaussians.
+
+        print(example["context"]["intrinsics"])
         visualization_dump = {}
         gaussians = encoder.forward(
             example["context"], False, visualization_dump=visualization_dump
@@ -121,6 +126,7 @@ def generate_point_cloud_figure(cfg_dict):
         # Figure out which Gaussians to mask off/throw away.
         _, _, _, h, w = example["context"]["image"].shape
 
+        print("SHAPE  ", example["context"]["image"].shape)
         # Transform means into camera space.
         means = rearrange(
             gaussians.means, "() (v h w spp) xyz -> h w spp v xyz", v=2, h=h, w=w
@@ -304,6 +310,25 @@ def generate_point_cloud_figure(cfg_dict):
                 (h, w),
                 "depth",
             )
+
+            target_gt = example["context"]["image"]
+
+            # Compute metrics.
+            psnr_probabilistic = compute_psnr(
+                rearrange(target_gt, "b v c h w -> (b v) c h w"),
+                rearrange(rendered.color, "b v c h w -> (b v) c h w"),
+            )
+            print("train/psnr_probabilistic", psnr_probabilistic.mean())
+
+
+            print(rendered.color.shape)
+
+            for i in range(rendered.color.size(1)):
+                save_image(rendered.color[0, i], f'image_{i}.png')
+
+            for i in range(target_gt.size(1)):
+                save_image(target_gt[0, i], f'gt_{i}.png')
+
 
             export_ply(
                 example["context"]["extrinsics"][0, 0],

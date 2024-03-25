@@ -178,3 +178,6 @@ table.tex
 
 /point_clouds
 /point_clouds/*
+
+/outputs
+/outputs/*

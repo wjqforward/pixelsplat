@@ -48,7 +48,17 @@ SCENES = (
     # ("test", [785, 795], 15, [0]),
     # ("1825_1865", [1825, 1865], 15, [0, 30, 60, 90, 120, 150]),
     # ("124_128", [124, 128], 15, [0, 30, 60, 90, 120, 150]),
-    ("512_522", [0, 20], 15, [0]),
+    # ("512_522", [0, 1], 15, [0]),
+    # ("512_522", [0, 2], 15, [0]),
+    # ("512_522", [0, 3], 15, [0]),
+    # ("512_522", [0, 4], 15, [0]),
+    # ("512_522", [0, 5], 15, [0]),
+    # ("512_522", [0, 10], 15, [0]),
+    # ("512_522", [0, 15], 15, [0]),
+    ("512_522", [0, 40], 10, [0]),
+    # ("512_522", [10, 20], 15, [0]),
+    # ("512_522", [20, 30], 15, [0]),
+    # ("512_522", [30, 40], 15, [0]),
 )
 
 FIGURE_WIDTH = 500
@@ -115,10 +125,23 @@ def read_extrinsics(file_path, indices):
     device = 'cuda:0'
     extrinsics_cuda = extrinsics_4d.to(device)
 
-    print("ex ", extrinsics_cuda)
+    # print("ex ", extrinsics_cuda)
     return extrinsics_cuda
 
 
+
+
+def load_depth(indices):
+    preprocess = transforms.Compose([
+        transforms.Resize((256,256)),
+        transforms.ToTensor(),
+    ])
+    image_paths = [f"{scene_path}depth{index:06}.png" for index in indices]
+
+    for path in image_paths:
+        image = Image.open(path)  
+        image = preprocess(image)
+    return image
 
 def load_images(indices):
     
@@ -134,7 +157,7 @@ def load_images(indices):
         image = Image.open(path)  
         image_tensor = preprocess(image)
         # save_image(image_tensor, 'new_image_path.jpg')
-        image_tensor = image_tensor.unsqueeze(0) 
+        image_tensor = image_tensor.unsqueeze(0)
         images.append(image_tensor)
 
     batch_tensor = torch.cat(images, dim=0)
@@ -179,7 +202,7 @@ def generate_point_cloud_figure(cfg_dict):
         step_tracker=None,
     )
     model_wrapper.eval()
-
+    PSNR = []
     
     for idx, (scene, context_indices, far, angles) in enumerate(SCENES):
         # example = {
@@ -213,10 +236,11 @@ def generate_point_cloud_figure(cfg_dict):
         example["context"]["intrinsics"] = intrinsics.unsqueeze(0)
         example["context"]["image"] = load_images(context_indices).to(device)
         # Assuming near and far values are predefined or calculated elsewhere
-        example["context"]["near"] = torch.tensor([[0.05, 0.05]]).to(device)  # Example values
-        example["context"]["far"] = torch.tensor([[10.0, 10.0]]).to(device)  # Example values
+        example["context"]["near"] = torch.tensor([[0.1, 0.1]]).to(device)  # Example values
+        example["context"]["far"] = torch.tensor([[8.0, 8.0]]).to(device)  # Example values
         example["context"]["index"] = torch.tensor([context_indices]).to(device)
 
+        target_index = (context_indices[0]+context_indices[1]) // 2
         # print(example["context"])
         # print("___________")
         # print(example["context"]["image"].shape)
@@ -224,34 +248,45 @@ def generate_point_cloud_figure(cfg_dict):
         # Generate the Gaussians.
         visualization_dump = {}
         gaussians = encoder.forward(
-            example["context"], True, visualization_dump=visualization_dump
+            example["context"], global_step=1, deterministic=True, visualization_dump=visualization_dump
         )
+        print(example["context"]["image"][0].shape)
+        print("GAUSSIAN NUM", gaussians.means.shape)
+
+
         time1 = time.time()
         print(time1-start_time)
+
+        # simplify covariance to radius
+        unit_matrix = torch.eye(3, device=device)
+        gaussians_covariances = 0.5 * (gaussians.covariances + gaussians.covariances.transpose(-2, -1)).to(device)
+        det_covariances = torch.linalg.det(gaussians_covariances.squeeze(0)).to(device)
+        new_variances = det_covariances.pow(1/3).to(device)
+        gaussians.covariances = unit_matrix * new_variances.unsqueeze(-1).unsqueeze(-1).expand_as(gaussians_covariances)
+
+
+        op_mask = gaussians.opacities < 0.1
+        gaussians.means = gaussians.means[~op_mask].unsqueeze(0)
+        gaussians.covariances = gaussians.covariances[~op_mask].unsqueeze(0)
+        gaussians.harmonics = gaussians.harmonics[~op_mask].unsqueeze(0)
+        gaussians.opacities = gaussians.opacities[~op_mask].unsqueeze(0)
+
+        
         # print(gaussians.covariances.shape)
         # print(gaussians.covariances)
         # print(gaussians.harmonics.shape)
         # print(gaussians.harmonics)
         # print("TESTTESTTEST")
-        # 计算每个协方差矩阵对角线元素（方差）的平均值
-        variance_means = gaussians.covariances.diagonal(dim1=-2, dim2=-1).mean(dim=-1)
 
-        # 创建一个全0的张量，形状与原始协方差矩阵相同
-        isotropic_covariances = torch.zeros_like(gaussians.covariances)
+        # variance_means = gaussians.covariances.diagonal(dim1=-2, dim2=-1).mean(dim=-1)
+        # isotropic_covariances = torch.zeros_like(gaussians.covariances)
+        # isotropic_covariances[..., 0, 0] = variance_means
+        # isotropic_covariances[..., 1, 1] = variance_means
+        # isotropic_covariances[..., 2, 2] = variance_means
+        # gaussians.covariances = isotropic_covariances
 
-        # 填充对角线元素为方差的平均值，创建各向同性协方差矩阵
-        # 这里使用了广播机制：variance_means[..., None, None] 将平均方差扩展到合适的维度
-        isotropic_covariances[..., 0, 0] = variance_means
-        isotropic_covariances[..., 1, 1] = variance_means
-        isotropic_covariances[..., 2, 2] = variance_means
-
-        # 更新原始的协方差矩阵为各向同性协方差矩阵
-        gaussians.covariances = isotropic_covariances
 
         zeroed_sh_coefficients = torch.zeros_like(gaussians.harmonics)
-
-        # 仅将0阶系数的值从原始张量复制到新的全0张量中
-        # 0阶系数对应最后一个维度的第一个元素
         zeroed_sh_coefficients[..., 0] = gaussians.harmonics[..., 0]
         gaussians.harmonics = zeroed_sh_coefficients
         # print("99999999999999999")
@@ -262,20 +297,38 @@ def generate_point_cloud_figure(cfg_dict):
         print(time2-start_time)
 
         # Render depth.
+        target_ex = read_extrinsics(extrinsics_path, [target_index])
+
+
         *_, h, w = example["context"]["image"].shape
+        target_in = torch.tensor([[[
+          [0.5000, 0.0000, 0.5000],
+          [0.0000, 0.8824, 0.5000],
+          [0.0000, 0.0000, 1.0000]]]], device='cuda:0')
+
+        target_near = torch.tensor([[0.0500]], device='cuda:0')
+        target_far = torch.tensor([[10.0]], device='cuda:0')
+
+
         rendered = decoder.forward(
             gaussians,
-            example["context"]["extrinsics"],
-            example["context"]["intrinsics"],
-            example["context"]["near"],
-            example["context"]["far"],
+            target_ex,
+            # example["context"]["extrinsics"],
+            # example["context"]["intrinsics"],
+            target_in,
+            target_near,
+            target_far,
+            # example["context"]["near"],
+            # example["context"]["far"],
             (h, w),
             "depth",
         )
 
         time3 = time.time()
         print(time3-time2)
-        target_gt = example["context"]["image"]
+
+        target_gt = load_images([target_index]).to(device)
+
 
         # Compute metrics.
         psnr_probabilistic = compute_psnr(
@@ -283,8 +336,9 @@ def generate_point_cloud_figure(cfg_dict):
             rearrange(rendered.color, "b v c h w -> (b v) c h w"),
         )
         print("train/psnr_probabilistic", psnr_probabilistic.mean())
-
-        print(rendered.color.shape)
+        PSNR.append(psnr_probabilistic.mean())
+        # 
+        # print(rendered.color.shape)
 
         for i in range(rendered.color.size(1)):
             save_image(rendered.color[0, i], f'image_{i}.png')
@@ -292,6 +346,29 @@ def generate_point_cloud_figure(cfg_dict):
         for i in range(target_gt.size(1)):
             save_image(target_gt[0, i], f'gt_{i}.png')
 
+        result = rendered.depth
+        depth_near = result[result > 0].quantile(0.01).log()
+        depth_far = result.quantile(0.99).log()
+        result = result.log()
+        result = 1 - (result - depth_near) / (depth_far - depth_near)
+        # result = apply_color_map_to_image(result, "turbo")
+        save_image(result[0, 0], f"_depth.png")
+
+        dep_gt = load_depth([target_index])
+        image_pil = transforms.ToPILImage()(dep_gt)
+
+        output_path = f"gt_depth.png"
+        image_pil.save(output_path)
+
+        gt_array = np.asarray(image_pil, dtype=np.float32)
+        pred_array = np.asarray(result[0, 0].cpu(), dtype=np.float32)
+    
+        # 计算绝对相对差
+        absrel = np.mean(np.abs(gt_array - pred_array) / gt_array)
+        print(absrel)
+
+
+    print(PSNR)
 
 
 if __name__ == "__main__":

@@ -51,7 +51,20 @@ SCENES = (
     # ("bc95e5c7e357f1b7", 30, 40, 15.0, [30, 60, 90, 120]),
     # ("34b0658a5c200cdf", 30, 40, 15.0, [30, 60, 90, 120]),
     # ("28e8300e004ab30b", 30, 40, 15.0, [30, 60, 90, 120]),
-    ("6558c5f10d45a929", 10, 30, 15.0, [60]),
+    ("6558c5f10d45a929", 0, 1, 15.0, [60]),
+    ("6558c5f10d45a929", 0, 2, 15.0, [60]),
+    ("6558c5f10d45a929", 0, 3, 15.0, [60]),
+    ("6558c5f10d45a929", 0, 4, 15.0, [60]),
+    # ("6558c5f10d45a929", 0, 5, 15.0, [60]),
+    # ("6558c5f10d45a929", 0, 10, 15.0, [60]),
+    # ("6558c5f10d45a929", 0, 15, 15.0, [60]),
+    # ("6558c5f10d45a929", 0, 20, 15.0, [60]),
+    # ("6558c5f10d45a929", 0, 25, 15.0, [60]),
+    # ("6558c5f10d45a929", 0, 30, 15.0, [60]),
+    # ("6558c5f10d45a929", 0, 35, 15.0, [60]),
+    # ("6558c5f10d45a929", 0, 40, 15.0, [60]),
+    # ("6558c5f10d45a929", 0, 45, 15.0, [60]),
+    # ("6558c5f10d45a929", 0, 50, 15.0, [60]),
     # ("89ea49cd9865aeff", 30, 40, 15.0, [30, 60, 90, 120]),
     # ("cd69cde6b6bab65c", 10, 20, 15.0, [0]),
 
@@ -70,6 +83,7 @@ POINT_DENSITY = 0.5
     config_name="main",
 )
 def generate_point_cloud_figure(cfg_dict):
+    PSNR = []
     cfg = load_typed_root_config(cfg_dict)
     set_cfg(cfg_dict)
     torch.manual_seed(cfg_dict.seed)
@@ -320,8 +334,8 @@ def generate_point_cloud_figure(cfg_dict):
             )
             print("train/psnr_probabilistic", psnr_probabilistic.mean())
 
-
-            print(rendered.color.shape)
+            PSNR.append(psnr_probabilistic.mean())
+            # print(rendered.color.shape)
 
             for i in range(rendered.color.size(1)):
                 save_image(rendered.color[0, i], f'image_{i}.png')
@@ -330,27 +344,29 @@ def generate_point_cloud_figure(cfg_dict):
                 save_image(target_gt[0, i], f'gt_{i}.png')
 
 
-            export_ply(
-                example["context"]["extrinsics"][0, 0],
-                trim(gaussians.means)[0],
-                trim(visualization_dump["scales"])[0],
-                trim(visualization_dump["rotations"])[0],
-                trim(gaussians.harmonics)[0],
-                trim(gaussians.opacities)[0],
-                base / "gaussians.ply",
-            )
+            # export_ply(
+            #     example["context"]["extrinsics"][0, 0],
+            #     trim(gaussians.means)[0],
+            #     trim(visualization_dump["scales"])[0],
+            #     trim(visualization_dump["rotations"])[0],
+            #     trim(gaussians.harmonics)[0],
+            #     trim(gaussians.opacities)[0],
+            #     base / "gaussians.ply",
+            # )
 
-            result = rendered.depth
-            depth_near = result[result > 0].quantile(0.01).log()
-            depth_far = result.quantile(0.99).log()
-            result = result.log()
-            result = 1 - (result - depth_near) / (depth_far - depth_near)
-            result = apply_color_map_to_image(result, "turbo")
-            save_image(result[0, 0], f"{base}_depth_0.png")
-            save_image(result[0, 1], f"{base}_depth_1.png")
-            a = 1
+            # result = rendered.depth
+            # depth_near = result[result > 0].quantile(0.01).log()
+            # depth_far = result.quantile(0.99).log()
+            # result = result.log()
+            # result = 1 - (result - depth_near) / (depth_far - depth_near)
+            # result = apply_color_map_to_image(result, "turbo")
+            # save_image(result[0, 0], f"{base}_depth_0.png")
+            # save_image(result[0, 1], f"{base}_depth_1.png")
+            # a = 1
         a = 1
+        
     a = 1
+    print(PSNR)
 
 
 if __name__ == "__main__":

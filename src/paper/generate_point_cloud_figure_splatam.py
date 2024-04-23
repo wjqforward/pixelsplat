@@ -154,7 +154,7 @@ class PointCloudGenerator():
         extrinsics = torch.stack([curr_w2c.inverse(), last_w2c.inverse()], dim=0).unsqueeze(0).to(self.device)
         example["context"]["extrinsics"] = extrinsics
         example["context"]["image"] = torch.stack([curr_img, last_img], dim=0).unsqueeze(0).to(self.device)
-        example["context"]["near"] = torch.tensor([[0.05, 0.05]]).to(self.device)  # Example values
+        example["context"]["near"] = torch.tensor([[1.0, 1.0]]).to(self.device)  # Example values
         example["context"]["far"] = torch.tensor([[10.0, 10.0]]).to(self.device)  # Example values
         example["context"]["index"] = torch.tensor([time_idx, time_idx-4]).to(self.device)
         example["context"]["intrinsics"] = torch.tensor([[[
@@ -180,9 +180,41 @@ class PointCloudGenerator():
 
         visualization_dump = {}
         gaussians = self.encoder.forward(
-            example["context"], True, visualization_dump=visualization_dump
+            example["context"], global_step=1, deterministic=True, visualization_dump=visualization_dump
         )
 
+        unit_matrix = torch.eye(3, device=self.device)
+        gaussians_covariances = 0.5 * (gaussians.covariances + gaussians.covariances.transpose(-2, -1)).to(self.device)
+        det_covariances = torch.linalg.det(gaussians_covariances.squeeze(0)).to(self.device)
+        new_variances = det_covariances.pow(1/3).to(self.device)
+        gaussians.covariances = unit_matrix * new_variances.unsqueeze(-1).unsqueeze(-1).expand_as(gaussians_covariances)
+
+
+
+
+        # # 计算每个协方差矩阵对角线元素（方差）的平均值
+        # variance_means = gaussians.covariances.diagonal(dim1=-2, dim2=-1).mean(dim=-1)
+
+
+
+        # # 创建一个全0的张量，形状与原始协方差矩阵相同
+        # isotropic_covariances = torch.zeros_like(gaussians.covariances)
+
+        # # 填充对角线元素为方差的平均值，创建各向同性协方差矩阵
+        # # 这里使用了广播机制：variance_means[..., None, None] 将平均方差扩展到合适的维度
+        # isotropic_covariances[..., 0, 0] = variance_means
+        # isotropic_covariances[..., 1, 1] = variance_means
+        # isotropic_covariances[..., 2, 2] = variance_means
+
+        # # 更新原始的协方差矩阵为各向同性协方差矩阵
+        # gaussians.covariances = isotropic_covariances
+
+        zeroed_sh_coefficients = torch.zeros_like(gaussians.harmonics)
+
+        # 仅将0阶系数的值从原始张量复制到新的全0张量中
+        # 0阶系数对应最后一个维度的第一个元素
+        zeroed_sh_coefficients[..., 0] = gaussians.harmonics[..., 0]
+        gaussians.harmonics = zeroed_sh_coefficients
         # # Figure out which Gaussians to mask off/throw away.
         # _, _, _, h, w = example["context"]["image"].shape
 
@@ -215,20 +247,20 @@ class PointCloudGenerator():
         # gaussians.harmonics = trim(gaussians.harmonics)
         # gaussians.opacities = trim(gaussians.opacities)
 
-        op_mask = gaussians.opacities < 0.15
+        op_mask = gaussians.opacities < 0.1
         gaussians.means = gaussians.means[~op_mask].unsqueeze(0)
         gaussians.covariances = gaussians.covariances[~op_mask].unsqueeze(0)
         gaussians.harmonics = gaussians.harmonics[~op_mask].unsqueeze(0)
         gaussians.opacities = gaussians.opacities[~op_mask].unsqueeze(0)
 
-        print(gaussians.means.shape)
+        # print(gaussians.means.shape)
         # print(gaussians.covariances.shape)
         # print(gaussians.harmonics.shape)
         # print(gaussians.opacities.shape)
         # print(gaussians.covariances)
         # print(gaussians.harmonics)
-        end_time = time.time()
-        print("time", end_time-start_time)
+        # end_time = time.time()
+        # print("time", end_time-start_time)
 
         if render:
             *_, h, w = example["context"]["image"].shape

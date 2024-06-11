@@ -12,7 +12,7 @@ from scipy.spatial.transform import Rotation as R
 from torch import Tensor
 from torch.utils.data import default_collate
 from src.evaluation.metrics import compute_lpips, compute_psnr, compute_ssim
-
+import open3d as o3d
 
 # Configure beartype and jaxtyping.
 with install_import_hook(
@@ -71,6 +71,28 @@ POINT_DENSITY = 0.5
 scene_path = "/root/autodl-tmp/SplaTAM/data/Replica/room0/results/"
 extrinsics_path = "/root/autodl-tmp/SplaTAM/data/Replica/room0/traj.txt"
 intrinsics_path = "/root/autodl-tmp/SplaTAM/data/Replica/cam_params.json"
+
+def create_point_cloud(points):
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points)
+    return pcd
+
+
+def merge(pcd, voxel_s):
+
+    print(pcd)
+    down_pcd = pcd.voxel_down_sample(voxel_size=0.01)
+
+    min_bound = pcd.get_min_bound()
+    max_bound = pcd.get_max_bound()
+    down_pcd, indices, inverse_indices = pcd.voxel_down_sample_and_trace(voxel_size=voxel_s, 
+                                                                        min_bound=min_bound, 
+                                                                        max_bound=max_bound)
+
+    extracted_idx = [int_vector[0] for int_vector in inverse_indices]
+
+    return extracted_idx
+
 
 def read_intrinsics_from_json_tensor(json_file_path):
     with open(json_file_path, 'r') as file:
@@ -254,8 +276,6 @@ def generate_point_cloud_figure(cfg_dict):
         print("GAUSSIAN NUM", gaussians.means.shape)
 
 
-        time1 = time.time()
-        print(time1-start_time)
 
         # simplify covariance to radius
         unit_matrix = torch.eye(3, device=device)
@@ -264,12 +284,21 @@ def generate_point_cloud_figure(cfg_dict):
         new_variances = det_covariances.pow(1/3).to(device)
         gaussians.covariances = unit_matrix * new_variances.unsqueeze(-1).unsqueeze(-1).expand_as(gaussians_covariances)
 
-
+        numpy_points = gaussians.means.squeeze().cpu().numpy() # 去除第一个维度并转换为 NumPy 数组
+        pcd = create_point_cloud(numpy_points)
+        merge_idx = merge(pcd, 0.01)
+        print(len(merge_idx))
+        print(gaussians.means.shape)
         op_mask = gaussians.opacities < 0.1
-        gaussians.means = gaussians.means[~op_mask].unsqueeze(0)
-        gaussians.covariances = gaussians.covariances[~op_mask].unsqueeze(0)
-        gaussians.harmonics = gaussians.harmonics[~op_mask].unsqueeze(0)
-        gaussians.opacities = gaussians.opacities[~op_mask].unsqueeze(0)
+        merge_mask = torch.zeros_like(op_mask, dtype=bool)
+        merge_mask[0, merge_idx] = True
+        mask_2 = ~op_mask & merge_mask
+
+
+        gaussians.means = gaussians.means[mask_2].unsqueeze(0)
+        gaussians.covariances = gaussians.covariances[mask_2].unsqueeze(0)
+        gaussians.harmonics = gaussians.harmonics[mask_2].unsqueeze(0)
+        gaussians.opacities = gaussians.opacities[mask_2].unsqueeze(0)
 
         
         # print(gaussians.covariances.shape)

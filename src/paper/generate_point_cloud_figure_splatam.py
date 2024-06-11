@@ -247,11 +247,11 @@ class PointCloudGenerator():
         # gaussians.harmonics = trim(gaussians.harmonics)
         # gaussians.opacities = trim(gaussians.opacities)
 
-        op_mask = gaussians.opacities < 0.1
-        gaussians.means = gaussians.means[~op_mask].unsqueeze(0)
-        gaussians.covariances = gaussians.covariances[~op_mask].unsqueeze(0)
-        gaussians.harmonics = gaussians.harmonics[~op_mask].unsqueeze(0)
-        gaussians.opacities = gaussians.opacities[~op_mask].unsqueeze(0)
+        # op_mask = gaussians.opacities < 0.1
+        # gaussians.means = gaussians.means[~op_mask].unsqueeze(0)
+        # gaussians.covariances = gaussians.covariances[~op_mask].unsqueeze(0)
+        # gaussians.harmonics = gaussians.harmonics[~op_mask].unsqueeze(0)
+        # gaussians.opacities = gaussians.opacities[~op_mask].unsqueeze(0)
 
         # print(gaussians.means.shape)
         # print(gaussians.covariances.shape)
